@@ -7,7 +7,7 @@
 //   - scenario "remote-assets": served from 127.0.0.1 like TizenBrew, so
 //     cores and the bundle come cross-origin from GitHub Pages
 import { chromium } from "playwright";
-
+import { existsSync } from "node:fs";
 const [siteUrl, romUrl, tbUrl, romFile] = process.argv.slice(2);
 const browser = await chromium.launch();
 let failed = false;
@@ -88,6 +88,7 @@ await scenario("rom", siteUrl, async (page, shot) => {
 
 if (tbUrl) await scenario("remote-assets", tbUrl, bootMenu);
 
+if (existsSync("site/cores/mupen64plus_next_libretro.wasm"))
 await scenario("n64", siteUrl + "?fps=1", async (page, shot) => {
    await page.click('.tile:has-text("Nintendo 64")');
    await page.waitForSelector("#screen-source.active");
