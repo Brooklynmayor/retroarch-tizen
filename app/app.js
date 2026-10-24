@@ -15,6 +15,8 @@
    var RA_HOME = "/home/web_user/retroarch";
    var CFG_PATH = RA_HOME + "/userdata/retroarch.cfg";
    var ROM_DIR = RA_HOME + "/roms";
+   /* PS1 BIOS IMPORT PATCH v2 */
+   var SYSTEM_DIR = RA_HOME + "/userdata/system";
 
    /* Inside the .wgt (file://) and inside TizenBrew (served by its local
       proxy on 127.0.0.1) the big files come from GitHub Pages. */
@@ -401,6 +403,7 @@
    var DEFAULT_CFG = [
       'menu_driver = "rgui"',
       'rgui_browser_directory = "' + ROM_DIR + '"',
+      'system_directory = "' + SYSTEM_DIR + '"',
       'rgui_show_start_screen = "false"',
       'video_smooth = "false"',
       'video_font_size = "24.000000"',
@@ -483,6 +486,15 @@
          var hasCfg = true;
          try { FS.stat(CFG_PATH); } catch (e) { hasCfg = false; }
          if (!hasCfg) FS.writeFile(CFG_PATH, DEFAULT_CFG);
+         // Point BIOS lookups at a persistent folder, even for existing settings.
+         mkdirp(FS, SYSTEM_DIR);
+         var currentCfg = FS.readFile(CFG_PATH, { encoding: "utf8" });
+         var configuredBiosLine = 'system_directory = "' + SYSTEM_DIR + '"';
+         var priorBiosLine = /^\s*system_directory\s*=.*$/m;
+         var newCfg = priorBiosLine.test(currentCfg)
+            ? currentCfg.replace(priorBiosLine, configuredBiosLine)
+            : currentCfg + "\n" + configuredBiosLine + "\n";
+         if (newCfg !== currentCfg) FS.writeFile(CFG_PATH, newCfg);
 
          var content = "--menu";
          if (pendingRom) {
@@ -516,6 +528,40 @@
    /* ------------------------------------------------------------------ */
 
    var selectedCore = null;
+   var biosImportMode = false;
+   var allowedPs1Bios = /^(scph5500|scph5501|scph5502)\.bin$/i;
+
+   function useUsbFile(name, data) {
+      if (!biosImportMode) { playRom(name, data); return; }
+      biosImportMode = false;
+      name = name.toLowerCase();
+      if (!allowedPs1Bios.test(name)) {
+         fail("Only scph5500.bin, scph5501.bin or scph5502.bin are supported");
+         return;
+      }
+      if (!data || data.length !== 524288) {
+         fail("The BIOS file must be exactly 524288 bytes (512 KiB)");
+         return;
+      }
+      loading("Saving PS1 BIOS...", null);
+      initFS().then(function () {
+         var fs = BrowserFS.BFSRequire("fs");
+         var Buffer = BrowserFS.BFSRequire("buffer").Buffer;
+         try { fs.mkdirSync(SYSTEM_DIR); } catch (e) {
+            if (e.code !== "EEXIST") throw e;
+         }
+         return new Promise(function (resolve, reject) {
+            fs.writeFile(SYSTEM_DIR + "/" + name, Buffer.from(data), function (err) {
+               if (err) reject(err); else resolve();
+            });
+         });
+      }).then(function () {
+         loading(null);
+         alert(name + " imported. Open the PlayStation core, set BIOS to Auto, and check Core Information for Present.");
+      }).catch(function (e) {
+         fail("Could not import PS1 BIOS", e);
+      });
+   }
 
    function buildHome() {
       var grid = $("core-grid");
@@ -538,6 +584,7 @@
 
    function openSource(core) {
       selectedCore = core;
+      biosImportMode = false;
       $("source-title").textContent = core.name + " — " + core.emu;
       var list = $("source-list");
       list.innerHTML = "";
@@ -548,7 +595,18 @@
          list.appendChild(b);
       }
 
-      if (usbAvailable()) add("Load ROM from USB drive", "", browseUsbRoot);
+      if (usbAvailable()) {
+         add("Load ROM from USB drive", "", function () {
+            biosImportMode = false;
+            browseUsbRoot();
+         });
+         if (core.id === "pcsx_rearmed") {
+            add("Import PS1 BIOS from USB", "scph5500.bin / scph5501.bin / scph5502.bin", function () {
+               biosImportMode = true;
+               browseUsbRoot();
+            });
+         }
+      }
       var net = savedNetUrl();
       if (net) add("Load ROM from network folder", net, function () { browseHttp(net); });
       add(net ? "Change network folder address" : "Load ROM from network folder", "HTTP", function () {
@@ -562,6 +620,7 @@
    /* ---- File browser (shared by USB and HTTP) ---- */
 
    function matchesCore(name) {
+      if (biosImportMode) return allowedPs1Bios.test(name);
       var ext = name.split(".").pop().toLowerCase();
       return ext === "zip" || ext === "7z" || selectedCore.ext.indexOf(ext) >= 0;
    }
@@ -637,7 +696,7 @@
                var h = tizen.filesystem.openFile(f.fullPath, "r");
                var data = h.readData();
                h.close();
-               playRom(f.name, data);
+               useUsbFile(f.name, data);
                return;
             }
          } catch (e) { log("openFile failed, falling back", e); }
@@ -645,7 +704,7 @@
             try {
                var bytes = stream.readBytes(f.fileSize);
                stream.close();
-               playRom(f.name, new Uint8Array(bytes));
+               useUsbFile(f.name, new Uint8Array(bytes));
             } catch (e) { fail("Could not read file", e); }
          }, function (e) { fail("Could not open file", e); });
       }, 50);
